@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rachakonda Layout – Interactive Plot Map</title>
+<link rel="stylesheet" href="map.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>LOHITHA DHARMA PROJECTS PVT. LTD.</h1>
+    <p>Rachakonda Village &middot; Pullalacheruvu Mandal &middot; Prakasham District &middot; Interactive Layout Plan</p>
+  </div>
+  <div class="legend">
+    <div class="leg"><div class="dot" style="background:#3d8c40"></div>Available</div>
+    <div class="leg"><div class="dot" style="background:#9b2d9b"></div>Sold Out</div>
+    <div class="leg"><div class="dot" style="background:#c060c0"></div>Booked</div>
+    <div class="leg"><div class="dot" style="background:#7b34b8"></div>Registered</div>
+  </div>
+</header>
+
+<div class="bar">
+  <div class="sc"><div class="sn" id="cA">–</div><div class="sl">Available</div></div>
+  <div class="sc"><div class="sn" id="cS">–</div><div class="sl">Sold Out</div></div>
+  <div class="sc"><div class="sn" id="cB">–</div><div class="sl">Booked</div></div>
+  <div class="sc"><div class="sn" id="cR">–</div><div class="sl">Registered</div></div>
+  <div class="sc"><div class="sn" id="cT">–</div><div class="sl">Total Plots</div></div>
+</div>
+
+<div class="wrap">
+  <p class="hint">Click any plot to view details</p>
+  <div id="map-viewport"></div>
+</div>
+
+<!-- Modal -->
+<div class="backdrop" id="backdrop">
+  <div class="modal">
+    <button class="modal-close" id="modal-close">&#215;</button>
+    <div class="mbadge" id="mN">Plot —</div><br>
+    <span class="mpill" id="mP">—</span>
+    <div class="detail-grid">
+      <div class="detail-card">
+        <div class="detail-label">Plot No.</div>
+        <div class="detail-value" id="mI">—</div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-label">Status</div>
+        <div class="detail-value" id="mS">—</div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-label">Area</div>
+        <div class="detail-value" id="mArea">—</div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-label">Mandal</div>
+        <div class="detail-value">Pullalacheruvu</div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-label">District</div>
+        <div class="detail-value">Prakasham</div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-label">Village</div>
+        <div class="detail-value">Rachakonda</div>
+      </div>
+    </div>
+    <button class="cta" id="mC">Enquire About This Plot</button>
+  </div>
+</div>
+
+<footer>&copy; Lohitha Dharma Projects Pvt. Ltd. &middot; Interactive Layout Plan &middot; All figures approximate</footer>
+
+<script src="map.js"></script>
+</body>
+</html>

@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plot Alignment Tool – Plots 193, 194, 175/A, 175/B, 211</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#1a1a2e; color:#eee; font-family: 'Segoe UI', sans-serif; display:flex; height:100vh; }
+
+#sidebar {
+  width: 340px; padding: 12px; overflow-y: auto; background: #16213e;
+  border-right: 2px solid #0f3460; flex-shrink: 0;
+}
+#sidebar h2 { font-size: 15px; margin-bottom: 8px; color: #e94560; }
+.plot-section { margin-bottom: 14px; padding: 8px; background: #0f3460; border-radius: 6px; }
+.plot-section h3 { font-size: 13px; margin-bottom: 6px; color: #53d8fb; }
+.point-row { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; font-size: 11px; }
+.point-row label { width: 24px; font-weight: bold; color: #aaa; }
+.point-row input {
+  width: 64px; padding: 2px 4px; background: #1a1a2e; color: #fff;
+  border: 1px solid #53d8fb; border-radius: 3px; font-size: 11px; text-align: right;
+}
+.shape-toggle { margin-bottom: 6px; font-size: 11px; }
+.shape-toggle select { background:#1a1a2e; color:#fff; border:1px solid #53d8fb; border-radius:3px; font-size:11px; padding:1px 4px;}
+
+#export-btn {
+  width: 100%; padding: 8px; margin-top: 8px; background: #e94560; color: #fff;
+  border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 13px;
+}
+#export-btn:hover { background: #c73e54; }
+#output { margin-top: 8px; font-size: 10px; background: #0a0a1a; padding: 6px;
+  border-radius: 4px; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; display:none; }
+
+#svg-container {
+  flex: 1; overflow: auto; position: relative; cursor: crosshair;
+}
+#svg-container svg { display: block; }
+
+.handle {
+  r: 3.5; fill: #ff0; stroke: #000; stroke-width: 0.5; cursor: grab;
+}
+.handle:hover { r: 5; fill: #ff6; }
+.handle.dragging { fill: #f00; r: 5; }
+
+#coords-display {
+  position: fixed; bottom: 10px; right: 10px; background: rgba(0,0,0,0.8);
+  padding: 6px 10px; border-radius: 4px; font-size: 12px; font-family: monospace; z-index:999;
+}
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>Plot Alignment Tool</h2>
+  <p style="font-size:11px; color:#888; margin-bottom:10px;">Drag yellow handles on the SVG or edit values here. Polygons have 4 corners (TL, TR, BR, BL). Rects have x, y, w, h.</p>
+
+  <div id="controls"></div>
+
+  <button id="export-btn">📋 Copy Coordinates to Clipboard</button>
+  <div id="output"></div>
+</div>
+
+<div id="svg-container"></div>
+<div id="coords-display">SVG: —, —</div>
+
+<script>
+// Plot definitions: current values from build_map.py
+const PLOTS = [
+  // Plot 193 (Col3-L unique top, like 128/60)
+  { id:'193', shape:'polygon', points:[
+    {label:'TL',x:266.2,y:124.5},{label:'TR',x:286.7,y:129.5},{label:'BR',x:286.7,y:146.8},{label:'BL',x:266.2,y:146.8}]},
+  // Plot 194 (Col3-R unique top, like 129/61)
+  { id:'194', shape:'polygon', points:[
+    {label:'TL',x:286.7,y:129.5},{label:'TR',x:307.3,y:135.5},{label:'BR',x:307.3,y:146.8},{label:'BL',x:286.7,y:146.8}]},
+  // Plot 175/A (Col3-L bottom split left)
+  { id:'175/A', shape:'polygon', points:[
+    {label:'TL',x:266.2,y:390.5},{label:'TR',x:276.5,y:390.5},{label:'BR',x:276.5,y:400.8},{label:'BL',x:266.2,y:400.8}]},
+  // Plot 175/B (Col3-L bottom split right)
+  { id:'175/B', shape:'polygon', points:[
+    {label:'TL',x:276.5,y:390.5},{label:'TR',x:286.7,y:390.5},{label:'BR',x:286.7,y:400.8},{label:'BL',x:276.5,y:400.8}]},
+  // Plot 211 (Col3-R unique bottom, like 147/80)
+  { id:'211', shape:'polygon', points:[
+    {label:'TL',x:286.7,y:390.5},{label:'TR',x:307.3,y:390.5},{label:'BR',x:307.3,y:400.8},{label:'BL',x:286.7,y:400.8}]},
+];
+
+let svgEl = null;
+let overlayGroup = null;
+let dragging = null; // {plotIdx, pointIdx or 'rect', startMouse, startVal}
+
+// Load the layout SVG (original, no plots)
+async function init() {
+  const resp = await fetch('map.svg');
+  const txt = await resp.text();
+  const container = document.getElementById('svg-container');
+  container.innerHTML = txt;
+  svgEl = container.querySelector('svg');
+
+  // Remove existing plot overlays so we only see our editable ones
+  const existingPlots = svgEl.querySelector('#plots');
+  if (existingPlots) existingPlots.remove();
+  const existingLabels = svgEl.querySelector('#plot-labels');
+  if (existingLabels) existingLabels.remove();
+
+  // Create overlay group
+  overlayGroup = document.createElementNS('http://www.w3.org/2000/svg','g');
+  overlayGroup.id = 'align-overlay';
+  svgEl.appendChild(overlayGroup);
+
+  buildControls();
+  renderOverlays();
+
+  // Mouse position display
+  svgEl.addEventListener('mousemove', e => {
+    const pt = svgPoint(e);
+    document.getElementById('coords-display').textContent = `SVG: ${pt.x.toFixed(1)}, ${pt.y.toFixed(1)}`;
+  });
+
+  // Drag handlers
+  svgEl.addEventListener('mousedown', onMouseDown);
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mouseup', onMouseUp);
+}
+
+function svgPoint(e) {
+  const pt = svgEl.createSVGPoint();
+  pt.x = e.clientX;
+  pt.y = e.clientY;
+  return pt.matrixTransform(svgEl.getScreenCTM().inverse());
+}
+
+function buildControls() {
+  const container = document.getElementById('controls');
+  container.innerHTML = '';
+
+  PLOTS.forEach((p, pi) => {
+    const sec = document.createElement('div');
+    sec.className = 'plot-section';
+
+    if (p.shape === 'polygon') {
+      sec.innerHTML = `<h3>Plot ${p.id} (polygon)</h3>`;
+      p.points.forEach((pt, pti) => {
+        const row = document.createElement('div');
+        row.className = 'point-row';
+        row.innerHTML = `
+          <label>${pt.label}</label>
+          x:<input type="number" step="0.1" value="${pt.x.toFixed(1)}" data-pi="${pi}" data-pti="${pti}" data-axis="x">
+          y:<input type="number" step="0.1" value="${pt.y.toFixed(1)}" data-pi="${pi}" data-pti="${pti}" data-axis="y">
+        `;
+        sec.appendChild(row);
+      });
+    } else {
+      sec.innerHTML = `<h3>Plot ${p.id} (rect)</h3>`;
+      ['x','y','w','h'].forEach(key => {
+        const row = document.createElement('div');
+        row.className = 'point-row';
+        row.innerHTML = `
+          <label>${key.toUpperCase()}</label>
+          <input type="number" step="0.1" value="${p[key].toFixed(1)}" data-pi="${pi}" data-key="${key}">
+        `;
+        sec.appendChild(row);
+      });
+    }
+    container.appendChild(sec);
+  });
+
+  // Listen for input changes
+  container.querySelectorAll('input').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const pi = parseInt(inp.dataset.pi);
+      const val = parseFloat(inp.value) || 0;
+      const plot = PLOTS[pi];
+      if (plot.shape === 'polygon') {
+        const pti = parseInt(inp.dataset.pti);
+        plot.points[pti][inp.dataset.axis] = val;
+      } else {
+        plot[inp.dataset.key] = val;
+      }
+      renderOverlays();
+    });
+  });
+}
+
+function renderOverlays() {
+  overlayGroup.innerHTML = '';
+  const ns = 'http://www.w3.org/2000/svg';
+
+  PLOTS.forEach((p, pi) => {
+    const colors = ['#ff4444','#44aaff','#44ff44','#ffaa00','#ff44ff'];
+    const color = colors[pi % colors.length];
+
+    if (p.shape === 'polygon') {
+      const poly = document.createElementNS(ns, 'polygon');
+      poly.setAttribute('points', p.points.map(pt => `${pt.x},${pt.y}`).join(' '));
+      poly.setAttribute('fill', color);
+      poly.setAttribute('fill-opacity', '0.25');
+      poly.setAttribute('stroke', color);
+      poly.setAttribute('stroke-width', '0.8');
+      overlayGroup.appendChild(poly);
+
+      // Label
+      const cx = p.points.reduce((s,pt)=>s+pt.x,0)/p.points.length;
+      const cy = p.points.reduce((s,pt)=>s+pt.y,0)/p.points.length;
+      const txt = document.createElementNS(ns, 'text');
+      txt.setAttribute('x', cx);
+      txt.setAttribute('y', cy + 2);
+      txt.setAttribute('text-anchor', 'middle');
+      txt.setAttribute('font-size', '6');
+      txt.setAttribute('fill', '#fff');
+      txt.setAttribute('font-weight', 'bold');
+      txt.textContent = p.id;
+      overlayGroup.appendChild(txt);
+
+      // Drag handles
+      p.points.forEach((pt, pti) => {
+        const c = document.createElementNS(ns, 'circle');
+        c.setAttribute('cx', pt.x);
+        c.setAttribute('cy', pt.y);
+        c.classList.add('handle');
+        c.dataset.pi = pi;
+        c.dataset.pti = pti;
+        overlayGroup.appendChild(c);
+      });
+    } else {
+      const rect = document.createElementNS(ns, 'rect');
+      rect.setAttribute('x', p.x);
+      rect.setAttribute('y', p.y);
+      rect.setAttribute('width', Math.max(p.w, 0.5));
+      rect.setAttribute('height', Math.max(p.h, 0.5));
+      rect.setAttribute('fill', color);
+      rect.setAttribute('fill-opacity', '0.25');
+      rect.setAttribute('stroke', color);
+      rect.setAttribute('stroke-width', '0.8');
+      overlayGroup.appendChild(rect);
+
+      // Label
+      const txt = document.createElementNS(ns, 'text');
+      txt.setAttribute('x', p.x + p.w/2);
+      txt.setAttribute('y', p.y + p.h/2 + 2);
+      txt.setAttribute('text-anchor', 'middle');
+      txt.setAttribute('font-size', '6');
+      txt.setAttribute('fill', '#fff');
+      txt.setAttribute('font-weight', 'bold');
+      txt.textContent = p.id;
+      overlayGroup.appendChild(txt);
+
+      // 4 corner handles for rect
+      const corners = [
+        {key:'tl', x:p.x, y:p.y},
+        {key:'tr', x:p.x+p.w, y:p.y},
+        {key:'br', x:p.x+p.w, y:p.y+p.h},
+        {key:'bl', x:p.x, y:p.y+p.h},
+      ];
+      corners.forEach((cn, ci) => {
+        const c = document.createElementNS(ns, 'circle');
+        c.setAttribute('cx', cn.x);
+        c.setAttribute('cy', cn.y);
+        c.classList.add('handle');
+        c.dataset.pi = pi;
+        c.dataset.corner = cn.key;
+        overlayGroup.appendChild(c);
+      });
+    }
+  });
+}
+
+function onMouseDown(e) {
+  const el = e.target;
+  if (!el.classList.contains('handle')) return;
+  e.preventDefault();
+  el.classList.add('dragging');
+  const pt = svgPoint(e);
+  const pi = parseInt(el.dataset.pi);
+  const plot = PLOTS[pi];
+
+  if (plot.shape === 'polygon') {
+    dragging = { el, pi, pti: parseInt(el.dataset.pti), startX: pt.x, startY: pt.y,
+      origX: plot.points[parseInt(el.dataset.pti)].x,
+      origY: plot.points[parseInt(el.dataset.pti)].y };
+  } else {
+    dragging = { el, pi, corner: el.dataset.corner, startX: pt.x, startY: pt.y,
+      origX: plot.x, origY: plot.y, origW: plot.w, origH: plot.h };
+  }
+}
+
+function onMouseMove(e) {
+  if (!dragging) return;
+  e.preventDefault();
+  const pt = svgPoint(e);
+  const dx = pt.x - dragging.startX;
+  const dy = pt.y - dragging.startY;
+  const plot = PLOTS[dragging.pi];
+
+  if (plot.shape === 'polygon') {
+    plot.points[dragging.pti].x = Math.round((dragging.origX + dx) * 10) / 10;
+    plot.points[dragging.pti].y = Math.round((dragging.origY + dy) * 10) / 10;
+  } else {
+    const c = dragging.corner;
+    if (c === 'tl') {
+      plot.x = Math.round((dragging.origX + dx) * 10) / 10;
+      plot.y = Math.round((dragging.origY + dy) * 10) / 10;
+      plot.w = Math.round((dragging.origW - dx) * 10) / 10;
+      plot.h = Math.round((dragging.origH - dy) * 10) / 10;
+    } else if (c === 'tr') {
+      plot.y = Math.round((dragging.origY + dy) * 10) / 10;
+      plot.w = Math.round((dragging.origW + dx) * 10) / 10;
+      plot.h = Math.round((dragging.origH - dy) * 10) / 10;
+    } else if (c === 'br') {
+      plot.w = Math.round((dragging.origW + dx) * 10) / 10;
+      plot.h = Math.round((dragging.origH + dy) * 10) / 10;
+    } else if (c === 'bl') {
+      plot.x = Math.round((dragging.origX + dx) * 10) / 10;
+      plot.w = Math.round((dragging.origW - dx) * 10) / 10;
+      plot.h = Math.round((dragging.origH + dy) * 10) / 10;
+    }
+  }
+  renderOverlays();
+  syncInputs();
+}
+
+function onMouseUp() {
+  if (dragging) {
+    dragging.el.classList.remove('dragging');
+    dragging = null;
+  }
+}
+
+function syncInputs() {
+  document.querySelectorAll('#controls input').forEach(inp => {
+    const pi = parseInt(inp.dataset.pi);
+    const plot = PLOTS[pi];
+    if (plot.shape === 'polygon') {
+      const pti = parseInt(inp.dataset.pti);
+      inp.value = plot.points[pti][inp.dataset.axis].toFixed(1);
+    } else {
+      inp.value = plot[inp.dataset.key].toFixed(1);
+    }
+  });
+}
+
+document.getElementById('export-btn').addEventListener('click', () => {
+  let out = 'PLOT COORDINATES (paste these back to me):\n\n';
+  PLOTS.forEach(p => {
+    if (p.shape === 'polygon') {
+      out += `Plot ${p.id} [polygon]: `;
+      out += p.points.map(pt => `${pt.label}(${pt.x.toFixed(1)},${pt.y.toFixed(1)})`).join(' ');
+      out += '\n';
+    } else {
+      out += `Plot ${p.id} [rect]: x=${p.x.toFixed(1)} y=${p.y.toFixed(1)} w=${p.w.toFixed(1)} h=${p.h.toFixed(1)}\n`;
+    }
+  });
+
+  navigator.clipboard.writeText(out).then(() => {
+    document.getElementById('export-btn').textContent = '✅ Copied!';
+    setTimeout(() => document.getElementById('export-btn').textContent = '📋 Copy Coordinates to Clipboard', 2000);
+  });
+
+  const outEl = document.getElementById('output');
+  outEl.style.display = 'block';
+  outEl.textContent = out;
+});
+
+init();
+</script>
+</body>
+</html>

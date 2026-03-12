@@ -1,0 +1,282 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Rachakonda Layout — Interactive Plot Map Styles
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&family=Inter:wght@400;500;600&display=swap');
+
+/* ── Reset & Base ──────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: Inter, sans-serif;
+  background: #0c1c2e;
+  color: #e2edf5;
+  min-height: 100vh;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+header {
+  background: linear-gradient(135deg, #091929, #12344d);
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 2px solid #c8a84b;
+  box-shadow: 0 3px 16px rgba(0,0,0,.5);
+}
+.brand h1 {
+  font-family: Rajdhani, sans-serif;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #c8a84b;
+}
+.brand p {
+  font-size: .65rem;
+  color: #7eaec8;
+  margin-top: 1px;
+}
+
+/* ── Legend ─────────────────────────────────────────────────────────────── */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.leg {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: .65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1px solid rgba(255,255,255,.3);
+}
+
+/* ── Stats Bar ─────────────────────────────────────────────────────────── */
+.bar {
+  max-width: 1100px;
+  margin: 10px auto;
+  padding: 0 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sc {
+  flex: 1;
+  min-width: 75px;
+  background: #0f2235;
+  border: 1px solid #1e3d5c;
+  border-radius: 8px;
+  padding: 7px 10px;
+  text-align: center;
+}
+.sn {
+  font-family: Rajdhani, sans-serif;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #c8a84b;
+  line-height: 1;
+}
+.sl {
+  font-size: .58rem;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: #6a96b8;
+  margin-top: 2px;
+}
+
+/* ── Map Container ─────────────────────────────────────────────────────── */
+.wrap {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 12px 20px;
+}
+.hint {
+  text-align: center;
+  font-size: .68rem;
+  color: #5a86a8;
+  margin-bottom: 6px;
+}
+#map-viewport {
+  position: relative;
+  width: 100%;
+  border: 2px solid #1e3d5c;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 6px 30px rgba(0,0,0,.6);
+  background: #fff;
+}
+#map-viewport svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ── Plot States (SVG fills) ───────────────────────────────────────────── */
+.plot {
+  cursor: pointer;
+  stroke-width: 0.8;
+  transition: fill .15s, stroke .15s, stroke-width .15s;
+}
+.plot.available {
+  fill: rgba(61,140,64,0.35);
+  stroke: rgba(61,140,64,0.8);
+}
+.plot.sold {
+  fill: rgba(155,45,155,0.35);
+  stroke: rgba(155,45,155,0.8);
+}
+.plot.booked {
+  fill: rgba(192,96,192,0.35);
+  stroke: rgba(192,96,192,0.8);
+}
+.plot.registered {
+  fill: rgba(123,52,184,0.35);
+  stroke: rgba(123,52,184,0.8);
+}
+
+/* ── Hover & Selected ──────────────────────────────────────────────────── */
+.plot:hover {
+  fill: rgba(60,140,255,0.45);
+  stroke: #4a9eff;
+  stroke-width: 1.5;
+}
+.plot.selected {
+  fill: rgba(200,168,75,0.35);
+  stroke: #c8a84b;
+  stroke-width: 2;
+  filter: drop-shadow(0 0 6px rgba(200,168,75,0.8));
+}
+
+/* ── Modal Overlay ─────────────────────────────────────────────────────── */
+.backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0,0,0,.7);
+  backdrop-filter: blur(6px);
+  align-items: center;
+  justify-content: center;
+}
+.backdrop.on { display: flex; }
+
+.modal {
+  background: linear-gradient(145deg, #0c2040, #142d4a);
+  border: 1px solid #2a5078;
+  border-radius: 14px;
+  padding: 24px 26px 20px;
+  width: 90%;
+  max-width: 360px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.9);
+  position: relative;
+  animation: pop .18s ease;
+}
+@keyframes pop {
+  from { transform: scale(.85); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+.modal-close {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: none;
+  border: none;
+  color: #6a96b8;
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.modal-close:hover { color: #fff; }
+
+.mbadge {
+  display: inline-block;
+  background: #c8a84b;
+  color: #0a1828;
+  font-family: Rajdhani, sans-serif;
+  font-size: 1.6rem;
+  font-weight: 700;
+  padding: 2px 14px;
+  border-radius: 5px;
+  margin-bottom: 6px;
+}
+.mpill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 20px;
+  font-size: .67rem;
+  font-weight: 700;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.pill-available  { background: #cbff96; color: #163400; }
+.pill-sold       { background: #c336ff; color: #fff; }
+.pill-booked     { background: #fcc1ff; color: #4a0060; }
+.pill-registered { background: #c236fe; color: #fff; }
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.detail-card {
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.detail-label {
+  font-size: .58rem;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  color: #6a96b8;
+  margin-bottom: 2px;
+}
+.detail-value {
+  font-family: Rajdhani, sans-serif;
+  font-size: .9rem;
+  font-weight: 600;
+  color: #e2edf5;
+}
+
+.cta {
+  margin-top: 14px;
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #c8a84b, #a07828);
+  color: #0a1828;
+  font-family: Rajdhani, sans-serif;
+  font-size: .9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform .15s, box-shadow .15s;
+  letter-spacing: .5px;
+}
+.cta:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 16px rgba(200,168,75,.4);
+}
+.cta.disabled {
+  background: #1e1e1e !important;
+  color: #666 !important;
+  cursor: default;
+}
+.cta.disabled:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────── */
+footer {
+  text-align: center;
+  padding: 10px;
+  font-size: .62rem;
+  color: #3a6088;
+  border-top: 1px solid #1a3355;
+  margin-top: 4px;
+}

@@ -1,0 +1,595 @@
+#!/usr/bin/env python3
+"""
+build_map.py — Read layout.svg + all_plots.json → produce clean map.svg with 321 plot shapes.
+
+Coordinate mapping: HTML-percentage positions → SVG viewBox units (0 0 595 842).
+"""
+
+import json
+import re
+
+# ─── Config ───────────────────────────────────────────────────────────────────
+
+SVG_INPUT  = "layout.svg"
+JSON_INPUT = "all_plots.json"
+SVG_OUTPUT = "map-project/map.svg"
+
+# ─── X-axis: piecewise linear interpolation (HTML% → SVG x) ──────────────────
+# Main grid: 13 anchor points mapping column boundaries from HTML% to SVG x-coords.
+# Derived from matching plot column positions to SVG road polygon boundaries.
+
+X_ANCHORS = [
+    (29.594, 169.87),   # Col1-L left edge
+    (32.582, 190.4),    # Col1-L right / Col1-R left
+    (35.964, 218.02),   # Col2-L left
+    (39.402, 238.58),   # Col2-L right / Col2-R left
+    (42.785, 266.17),   # Col3-L left (was 266.154)
+    (45.998, 286.73),   # Col3-L right / Col3-R left
+    (49.267, 313.529),  # Col4-L left
+    (52.649, 334.4),    # Col4-L right / Col4-R left
+    (55.750, 361.563),  # Col5-L left
+    (59.076, 408.912),  # Col6-L left  (gap after Col5)
+    (62.683, 429.711),  # Col6-L right / Col6-R left
+    (65.953, 456.238),  # Col7-L left
+    (68.940, 477.35),   # Col7-L right
+]
+
+# Left/bottom area: separate grid for plots 1-26 (outside main columns).
+# Derived from SVG vertical grid lines at x=80, 96.8, 113.57, 130.37, 147.17
+# plus the column 1 left boundary at x=161.94.
+LEFT_X_ANCHORS = [
+    (17.50,  80.0),     # Plot 20 left edge
+    (20.00,  96.8),     # Plot 19 left edge
+    (22.50, 113.57),    # Plot 18 left edge
+    (25.00, 130.37),    # Plot 17 left edge
+    (27.50, 147.17),    # Plot 16 left edge
+    (29.50, 161.94),    # Column 1 left boundary
+]
+
+# Labels of ALL left-area plots (use LEFT_X_ANCHORS for X mapping)
+LEFT_AREA_LABELS = (
+    {str(i) for i in range(1, 27)}  # plots 1-26
+    | {'95'}                          # plot 95 (bottom of col1, at left=29.5)
+)
+
+# ─── Y-axis: piecewise linear interpolation (HTML top% → SVG y) ──────────────
+# 34 anchor points from Column 1 plots mapped 1:1 to SVG horizontal grid lines.
+# SVG grid y-values extracted from layout.svg lines 76-240 (~14.28 unit spacing).
+
+ROW_TABLE = [
+    ( 8.150, 133.524),   # Plot 61 → grid row 1
+    (10.479, 147.804),   # Plot 60 → grid row 2
+    (12.807, 162.086),   # Plot 59 → grid row 3
+    (15.071, 176.366),   # Plot 58
+    (17.335, 190.646),   # Plot 57
+    (19.599, 204.926),   # Plot 56
+    (21.863, 219.206),   # Plot 55
+    (24.191, 233.486),   # Plot 54
+    (26.455, 247.767),   # Plot 53
+    (28.719, 262.047),   # Plot 52
+    (31.048, 276.310),   # Plot 51
+    (33.376, 290.590),   # Plot 50
+    (35.705, 304.870),   # Plot 49
+    (37.969, 319.150),   # Plot 48
+    (40.233, 333.430),   # Plot 46
+    (42.432, 347.710),   # Plot 45
+    (44.567, 361.974),   # Plot 44
+    (46.895, 376.255),   # Plot 43
+    (49.159, 390.535),   # Plot 42
+    (51.488, 404.815),   # Plot 41
+    (55.239, 419.096),   # Plot 40/A
+    (58.538, 433.376),   # Plot 39
+    (60.479, 447.655),   # Plot 38
+    (62.807, 461.937),   # Plot 37
+    (65.265, 476.215),   # Plot 36
+    (67.529, 490.496),   # Plot 35
+    (69.793, 504.775),   # Plot 34
+    (71.928, 519.058),   # Plot 33
+    (73.700, 533.337),   # Plot 32/B
+    (75.000, 547.617),   # Plot 31/B
+    (76.520, 561.898),   # Plot 30
+    (79.043, 576.177),   # Plot 29
+    (81.371, 590.458),   # Plot 28
+    (83.700, 604.738),   # Plot 27 → grid row 34
+]
+
+GRID_Y_VALUES = [entry[1] for entry in ROW_TABLE]
+SNAP_THRESHOLD_Y = 1.5  # SVG units
+
+# ─── Left diagonal boundary (SVG coordinates) ───────────────────────────────
+# The diagonal road polygon (layout.svg line 6) defines the left boundary.
+# Right edge of road (inner, facing plots) traced from the polygon points:
+#   (161.77, 198.409) → (116.214, 398.471) → (58.228, 649.469)
+# Plots 1-15 sit between this road and column 1 (x=161.94).
+
+# Diagonal road right-edge points (from layout.svg line 6 polygon).
+# Format: (svg_y, svg_x) — the inner edge that plots face.
+DIAG_ROAD_POINTS = [
+    (180.667, 153.0),    # top of diagonal road
+    (198.409, 161.77),   # road meets column 1
+    (398.471, 116.214),  # middle
+    (649.469,  58.228),  # near bottom
+]
+
+def diag_road_edge_svg(svg_y):
+    """Return SVG x of the right edge of the diagonal road at a given SVG y.
+    This is the LEFT boundary of diagonal plots in SVG coordinates."""
+    if svg_y <= DIAG_ROAD_POINTS[0][0]:
+        # Above the diagonal road — use the top boundary (grid line endpoints).
+        return top_boundary_x(svg_y)
+    for i in range(len(DIAG_ROAD_POINTS) - 1):
+        y0, x0 = DIAG_ROAD_POINTS[i]
+        y1, x1 = DIAG_ROAD_POINTS[i + 1]
+        if y0 <= svg_y <= y1:
+            t = (svg_y - y0) / (y1 - y0)
+            return x0 + t * (x1 - x0)
+    # Below last point — extrapolate
+    y0, x0 = DIAG_ROAD_POINTS[-2]
+    y1, x1 = DIAG_ROAD_POINTS[-1]
+    slope = (x1 - x0) / (y1 - y0)
+    return x1 + slope * (svg_y - y1)
+
+# Diagonal plots: rendered as <polygon> with left edge following boundary
+# NOTE: plots 2-5 are NOT diagonal — they're rectangular in the top area
+DIAG_PLOT_LABELS = {str(i) for i in range(6, 16)}
+
+# Top-area plots (1-5): in the triangular area around the structural polygon
+TOP_AREA_LABELS = {str(i) for i in range(1, 6)}
+
+# ─── Top-area boundary (from SVG grid line LEFT endpoints, lines 118-123) ────
+# The triangular area NARROWS going down (widest near y=130, narrowest at road).
+# Format: (svg_y, left_boundary_x)
+_TOP_BOUNDARY_POINTS = [
+    (104.45, 161.94),   # column 1 top (apex, zero width)
+    (130.542, 127.52),  # grid line endpoint (line 123)
+    (133.524, 129.11),  # grid line endpoint (line 122)
+    (147.804, 136.032), # grid line endpoint (line 120)
+    (162.086, 143.484), # grid line endpoint (line 118)
+    (180.667, 153.0),   # road left edge start (line 6 polygon vertex)
+]
+
+# Road outer (left) edge slope: (153, 180.667) → (32.459, 684.59)
+_ROAD_LEFT_SLOPE = (32.459 - 153.0) / (684.59 - 180.667)  # ≈ -0.2393
+
+def top_boundary_x(svg_y):
+    """Left boundary x of the top triangular area at a given SVG y.
+    Uses grid line endpoints for y < 180.667, road outer edge below."""
+    pts = _TOP_BOUNDARY_POINTS
+    if svg_y <= pts[0][0]:
+        return pts[0][1]
+    if svg_y >= pts[-1][0]:
+        # Below road start: follow road's outer (left) edge
+        return 153.0 + _ROAD_LEFT_SLOPE * (svg_y - 180.667)
+    for i in range(len(pts) - 1):
+        y0, x0 = pts[i]
+        y1, x1 = pts[i + 1]
+        if y0 <= svg_y <= y1:
+            t = (svg_y - y0) / (y1 - y0)
+            return x0 + t * (x1 - x0)
+    return pts[-1][1]
+
+# ─── Top-area Y mapping (different from main grid ROW_TABLE) ─────────────────
+# Plots 1-2 sit ABOVE the structural polygon (dark bar at y=128-135).
+# Plots 3-5 sit BELOW it, snapped to grid lines.
+# The Y scale in this region differs from the main grid.
+_TOP_AREA_Y_ANCHORS = [
+    ( 7.80, 110.0),     # plots 1-2 top (above dark bar)
+    (10.80, 128.0),     # plots 1-2 bottom (dark bar top)
+    (11.00, 135.117),   # plot 3 top (dark bar bottom)
+    (14.50, 147.804),   # plot 4 top (grid line)
+    (18.30, 162.086),   # plot 5 top (grid line)
+    (23.30, 180.667),   # plot 5 bottom (road start)
+]
+
+def _top_area_y(pct):
+    """Convert HTML top% to SVG y for top-area plots (1-5)."""
+    return _piecewise_interp(_TOP_AREA_Y_ANCHORS, pct)
+
+# ─── Manually aligned polygon coordinates (plots 1-26) ──────────────────────
+# Each entry: label → [(TL_x,TL_y), (TR_x,TR_y), (BR_x,BR_y), (BL_x,BL_y)]
+# Aligned visually using the alignment tool against layout.svg.
+
+MANUAL_PLOT_COORDS = {
+    # --- Plots 1-26: left/diagonal/bottom area (manually aligned) ---
+    '1':  [(91.7,63.0),   (148.7,97.0),  (148.3,128.0), (126.1,128.0)],
+    '2':  [(148.7,97.0),  (161.9,105.0), (161.9,128.0), (148.3,128.0)],
+    '3':  [(128.8,135.1), (161.9,135.1), (161.9,147.8), (135.8,147.8)],
+    '4':  [(135.9,147.8), (161.9,147.8), (161.9,162.1), (142.9,161.1)],
+    '5':  [(142.5,161.1), (161.9,162.1), (161.9,196.7), (151.5,177.7)],
+    '6':  [(162.0,198.4), (161.9,333.4), (161.9,348.7), (127.2,348.7)],
+    '7':  [(127.2,348.7), (161.9,348.7), (161.9,384.8), (119.1,382.8)],
+    '8':  [(119.4,383.1), (161.9,384.1), (161.9,416.4), (112.2,415.4)],
+    '9':  [(112.2,415.4), (161.9,416.4), (161.9,443.2), (105.4,444.2)],
+    '10': [(105.4,444.2), (161.9,443.2), (161.9,468.0), (99.6,468.0)],
+    '11': [(99.6,468.0),  (161.9,468.0), (161.9,488.8), (94.8,488.8)],
+    '12': [(94.8,488.8),  (161.9,488.8), (161.9,509.1), (90.4,509.1)],
+    '13': [(90.4,509.1),  (161.9,509.1), (161.9,529.4), (86.1,528.4)],
+    '14': [(86.1,528.4),  (162.9,529.4), (161.9,547.0), (82.1,547.0)],
+    '15': [(99.1,547.0),  (161.9,547.0), (161.9,567.1), (97.3,567.1)],
+    '16': [(145.2,567.3), (162.0,567.3), (162.0,604.7), (146.2,604.7)],
+    '17': [(128.4,567.3), (145.2,567.3), (146.2,604.7), (129.4,604.7)],
+    '18': [(113.6,567.3), (128.4,567.3), (129.4,604.7), (113.6,604.7)],
+    '19': [(97.8,566.3),  (113.6,567.3), (113.6,604.7), (95.8,604.7)],
+    '20': [(82.0,547.3),  (98.8,547.3),  (95.8,604.7),  (68.0,605.7)],
+    '21': [(67.0,612.9),  (81.4,613.9),  (79.4,644.2),  (58.0,649.2)],
+    '22': [(97.4,612.9),  (80.9,612.9),  (78.9,644.2),  (96.4,642.2)],
+    '23': [(96.9,612.9),  (113.3,612.9), (113.3,639.2), (96.9,642.2)],
+    '24': [(113.3,612.9), (130.7,612.9), (129.7,636.2), (113.3,639.2)],
+    '25': [(146.7,632.9), (146.2,612.9), (130.2,613.2), (129.7,636.2)],
+    '26': [(146.2,612.9), (162.0,612.9), (162.0,630.2), (146.2,633.2)],
+    # --- Plots 60-61: unique angled tops (Col1-L / Col1-R) ---
+    '60': [(169.9,110.5), (190.4,117.5), (190.4,133.8), (169.9,133.8)],
+    '61': [(190.4,117.5), (211.0,122.5), (211.0,133.8), (190.4,133.8)],
+    # --- Col1-L regular grid: plots 59-41 (x=169.9→190.4, row height=14.3) ---
+    '59': [(169.9,133.8), (190.4,133.8), (190.4,148.1), (169.9,148.1)],
+    '58': [(169.9,148.1), (190.4,148.1), (190.4,162.4), (169.9,162.4)],
+    '57': [(169.9,162.4), (190.4,162.4), (190.4,176.7), (169.9,176.7)],
+    '56': [(169.9,176.7), (190.4,176.7), (190.4,191.0), (169.9,191.0)],
+    '55': [(169.9,191.0), (190.4,191.0), (190.4,205.3), (169.9,205.3)],
+    '54': [(169.9,205.3), (190.4,205.3), (190.4,219.6), (169.9,219.6)],
+    '53': [(169.9,219.6), (190.4,219.6), (190.4,233.9), (169.9,233.9)],
+    '52': [(169.9,233.9), (190.4,233.9), (190.4,248.2), (169.9,248.2)],
+    '51': [(169.9,248.2), (190.4,248.2), (190.4,262.5), (169.9,262.5)],
+    '50': [(169.9,262.5), (190.4,262.5), (190.4,276.8), (169.9,276.8)],
+    '49': [(169.9,276.8), (190.4,276.8), (190.4,291.1), (169.9,291.1)],
+    '48': [(169.9,291.1), (190.4,291.1), (190.4,305.4), (169.9,305.4)],
+    '47': [(169.9,305.4), (190.4,305.4), (190.4,319.7), (169.9,319.7)],
+    '46': [(169.9,319.7), (190.4,319.7), (190.4,334.0), (169.9,334.0)],
+    '45': [(169.9,334.0), (190.4,334.0), (190.4,348.3), (169.9,348.3)],
+    '44': [(169.9,348.3), (190.4,348.3), (190.4,362.6), (169.9,362.6)],
+    '43': [(169.9,362.6), (190.4,362.6), (190.4,376.9), (169.9,376.9)],
+    '42': [(169.9,376.9), (190.4,376.9), (190.4,391.2), (169.9,391.2)],
+    '41': [(169.9,390.9), (190.4,390.9), (190.4,401.0), (169.9,400.2)],
+    # --- Col1-R regular grid: plots 62-79 (x=190.4→211.0, row height=14.3) ---
+    '62': [(190.4,133.8), (211.0,133.8), (211.0,148.1), (190.4,148.1)],
+    '63': [(190.4,148.1), (211.0,148.1), (211.0,162.4), (190.4,162.4)],
+    '64': [(190.4,162.4), (211.0,162.4), (211.0,176.7), (190.4,176.7)],
+    '65': [(190.4,176.7), (211.0,176.7), (211.0,191.0), (190.4,191.0)],
+    '66': [(190.4,191.0), (211.0,191.0), (211.0,205.3), (190.4,205.3)],
+    '67': [(190.4,205.3), (211.0,205.3), (211.0,219.6), (190.4,219.6)],
+    '68': [(190.4,219.6), (211.0,219.6), (211.0,233.9), (190.4,233.9)],
+    '69': [(190.4,233.9), (211.0,233.9), (211.0,248.2), (190.4,248.2)],
+    '70': [(190.4,248.2), (211.0,248.2), (211.0,262.5), (190.4,262.5)],
+    '71': [(190.4,262.5), (211.0,262.5), (211.0,276.8), (190.4,276.8)],
+    '72': [(190.4,276.8), (211.0,276.8), (211.0,291.1), (190.4,291.1)],
+    '73': [(190.4,291.1), (211.0,291.1), (211.0,305.4), (190.4,305.4)],
+    '74': [(190.4,305.4), (211.0,305.4), (211.0,319.7), (190.4,319.7)],
+    '75': [(190.4,319.7), (211.0,319.7), (211.0,334.0), (190.4,334.0)],
+    '76': [(190.4,334.0), (211.0,334.0), (211.0,348.3), (190.4,348.3)],
+    '77': [(190.4,348.3), (211.0,348.3), (211.0,362.6), (190.4,362.6)],
+    '78': [(190.4,362.6), (211.0,362.6), (211.0,376.9), (190.4,376.9)],
+    '79': [(190.4,376.9), (211.0,376.9), (211.0,391.2), (190.4,391.2)],
+    '80': [(210.5,390.9), (190.4,390.9), (190.4,400.7), (210.5,400.7)],
+    # --- Col2-L: plots 128 (unique top), 127-111 (regular, y starts 146.8, step 14.3), 110 (unique bottom) ---
+    '128': [(218.0,124.5), (238.6,129.5), (238.6,146.8), (218.0,146.8)],
+    '127': [(218.0,146.8), (238.6,146.8), (238.6,161.1), (218.0,161.1)],
+    '126': [(218.0,161.1), (238.6,161.1), (238.6,175.4), (218.0,175.4)],
+    '125': [(218.0,175.4), (238.6,175.4), (238.6,189.7), (218.0,189.7)],
+    '124': [(218.0,189.7), (238.6,189.7), (238.6,204.0), (218.0,204.0)],
+    '123': [(218.0,204.0), (238.6,204.0), (238.6,218.3), (218.0,218.3)],
+    '122': [(218.0,218.3), (238.6,218.3), (238.6,232.6), (218.0,232.6)],
+    '121': [(218.0,232.6), (238.6,232.6), (238.6,246.9), (218.0,246.9)],
+    '120': [(218.0,246.9), (238.6,246.9), (238.6,261.2), (218.0,261.2)],
+    '119': [(218.0,261.2), (238.6,261.2), (238.6,275.5), (218.0,275.5)],
+    '118': [(218.0,275.5), (238.6,275.5), (238.6,289.8), (218.0,289.8)],
+    '117': [(218.0,289.8), (238.6,289.8), (238.6,304.1), (218.0,304.1)],
+    '116': [(218.0,304.1), (238.6,304.1), (238.6,318.4), (218.0,318.4)],
+    '115': [(218.0,318.4), (238.6,318.4), (238.6,332.7), (218.0,332.7)],
+    '114': [(218.0,332.7), (238.6,332.7), (238.6,347.0), (218.0,347.0)],
+    '113': [(218.0,347.0), (238.6,347.0), (238.6,361.3), (218.0,361.3)],
+    '112': [(218.0,361.3), (238.6,361.3), (238.6,375.6), (218.0,375.6)],
+    '111': [(218.0,375.6), (238.6,375.6), (238.6,389.9), (218.0,389.9)],
+    '110': [(218.0,390.5), (238.6,390.5), (238.6,400.8), (218.0,400.8)],
+    # --- Col2-R: plots 129 (unique top), 130-146 (regular, y starts 146.8, step 14.3), 147 (unique bottom) ---
+    '129': [(238.6,129.5), (258.7,135.5), (259.2,146.8), (238.6,146.8)],
+    '130': [(238.6,146.8), (259.2,146.8), (259.2,161.1), (238.6,161.1)],
+    '131': [(238.6,161.1), (259.2,161.1), (259.2,175.4), (238.6,175.4)],
+    '132': [(238.6,175.4), (259.2,175.4), (259.2,189.7), (238.6,189.7)],
+    '133': [(238.6,189.7), (259.2,189.7), (259.2,204.0), (238.6,204.0)],
+    '134': [(238.6,204.0), (259.2,204.0), (259.2,218.3), (238.6,218.3)],
+    '135': [(238.6,218.3), (259.2,218.3), (259.2,232.6), (238.6,232.6)],
+    '136': [(238.6,232.6), (259.2,232.6), (259.2,246.9), (238.6,246.9)],
+    '137': [(238.6,246.9), (259.2,246.9), (259.2,261.2), (238.6,261.2)],
+    '138': [(238.6,261.2), (259.2,261.2), (259.2,275.5), (238.6,275.5)],
+    '139': [(238.6,275.5), (259.2,275.5), (259.2,289.8), (238.6,289.8)],
+    '140': [(238.6,289.8), (259.2,289.8), (259.2,304.1), (238.6,304.1)],
+    '141': [(238.6,304.1), (259.2,304.1), (259.2,318.4), (238.6,318.4)],
+    '142': [(238.6,318.4), (259.2,318.4), (259.2,332.7), (238.6,332.7)],
+    '143': [(238.6,332.7), (259.2,332.7), (259.2,347.0), (238.6,347.0)],
+    '144': [(238.6,347.0), (259.2,347.0), (259.2,361.3), (238.6,361.3)],
+    '145': [(238.6,361.3), (259.2,361.3), (259.2,375.6), (238.6,375.6)],
+    '146': [(238.6,375.6), (259.2,375.6), (259.2,389.9), (238.6,389.9)],
+    '147': [(238.6,390.5), (259.2,390.5), (259.2,400.8), (238.6,400.8)],
+    # --- Col3-L: 193 (unique top placeholder), 192-176 (regular), 175/A+175/B (unique bottom placeholder) ---
+    '193': [(266.2,124.5), (286.7,129.5), (286.7,146.8), (266.2,146.8)],
+    '192': [(266.2,146.8), (286.7,146.8), (286.7,161.1), (266.2,161.1)],
+    '191': [(266.2,161.1), (286.7,161.1), (286.7,175.4), (266.2,175.4)],
+    '190': [(266.2,175.4), (286.7,175.4), (286.7,189.7), (266.2,189.7)],
+    '189': [(266.2,189.7), (286.7,189.7), (286.7,204.0), (266.2,204.0)],
+    '188': [(266.2,204.0), (286.7,204.0), (286.7,218.3), (266.2,218.3)],
+    '187': [(266.2,218.3), (286.7,218.3), (286.7,232.6), (266.2,232.6)],
+    '186': [(266.2,232.6), (286.7,232.6), (286.7,246.9), (266.2,246.9)],
+    '185': [(266.2,246.9), (286.7,246.9), (286.7,261.2), (266.2,261.2)],
+    '184': [(266.2,261.2), (286.7,261.2), (286.7,275.5), (266.2,275.5)],
+    '183': [(266.2,275.5), (286.7,275.5), (286.7,289.8), (266.2,289.8)],
+    '182': [(266.2,289.8), (286.7,289.8), (286.7,304.1), (266.2,304.1)],
+    '181': [(266.2,304.1), (286.7,304.1), (286.7,318.4), (266.2,318.4)],
+    '180': [(266.2,318.4), (286.7,318.4), (286.7,332.7), (266.2,332.7)],
+    '179': [(266.2,332.7), (286.7,332.7), (286.7,347.0), (266.2,347.0)],
+    '178': [(266.2,347.0), (286.7,347.0), (286.7,361.3), (266.2,361.3)],
+    '177': [(266.2,361.3), (286.7,361.3), (286.7,375.6), (266.2,375.6)],
+    '176': [(266.2,375.6), (286.7,375.6), (286.7,389.9), (266.2,389.9)],
+    '175': [(266.2,390.5), (286.7,390.5), (286.7,400.8), (266.2,400.8)],
+    # --- Col3-R: 194 (unique top placeholder), 195-210 (regular), 211 (unique bottom placeholder) ---
+    '194': [(286.7,129.5), (307.3,135.5), (307.3,146.8), (286.7,146.8)],
+    '195': [(286.7,146.8), (307.3,146.8), (307.3,161.1), (286.7,161.1)],
+    '196': [(286.7,161.1), (307.3,161.1), (307.3,175.4), (286.7,175.4)],
+    '197': [(286.7,175.4), (307.3,175.4), (307.3,189.7), (286.7,189.7)],
+    '198': [(286.7,189.7), (307.3,189.7), (307.3,204.0), (286.7,204.0)],
+    '199': [(286.7,204.0), (307.3,204.0), (307.3,218.3), (286.7,218.3)],
+    '200': [(286.7,218.3), (307.3,218.3), (307.3,232.6), (286.7,232.6)],
+    '201': [(286.7,232.6), (307.3,232.6), (307.3,246.9), (286.7,246.9)],
+    '202': [(286.7,261.2), (307.3,261.2), (307.3,275.5), (286.7,275.5)],
+    '203': [(286.7,275.5), (307.3,275.5), (307.3,289.8), (286.7,289.8)],
+    '204': [(286.7,289.8), (307.3,289.8), (307.3,304.1), (286.7,304.1)],
+    '205': [(286.7,304.1), (307.3,304.1), (307.3,318.4), (286.7,318.4)],
+    '206': [(286.7,318.4), (307.3,318.4), (307.3,332.7), (286.7,332.7)],
+    '207': [(286.7,332.7), (307.3,332.7), (307.3,347.0), (286.7,347.0)],
+    '208': [(286.7,347.0), (307.3,347.0), (307.3,361.3), (286.7,361.3)],
+    '209': [(286.7,361.3), (307.3,361.3), (307.3,375.6), (286.7,375.6)],
+    '210': [(286.7,375.6), (307.3,375.6), (307.3,389.9), (286.7,389.9)],
+    '211': [(286.7,390.5), (307.3,390.5), (307.3,400.8), (286.7,400.8)],
+}
+
+# ─── Coordinate conversion helpers ───────────────────────────────────────────
+
+def _piecewise_interp(anchors, val):
+    """Generic piecewise linear interpolation with extrapolation."""
+    if val <= anchors[0][0]:
+        p0, s0 = anchors[0]
+        p1, s1 = anchors[1]
+        scale = (s1 - s0) / (p1 - p0)
+        return s0 + scale * (val - p0)
+    if val >= anchors[-1][0]:
+        p0, s0 = anchors[-2]
+        p1, s1 = anchors[-1]
+        scale = (s1 - s0) / (p1 - p0)
+        return s1 + scale * (val - p1)
+    for i in range(len(anchors) - 1):
+        p0, s0 = anchors[i]
+        p1, s1 = anchors[i + 1]
+        if p0 <= val <= p1:
+            t = (val - p0) / (p1 - p0)
+            return s0 + t * (s1 - s0)
+    return anchors[-1][1]
+
+def html_x_to_svg(x_pct, use_left=False):
+    """Convert HTML left% to SVG x using piecewise linear interpolation.
+    use_left=True routes through LEFT_X_ANCHORS (for plots 1-26)."""
+    if use_left:
+        return _piecewise_interp(LEFT_X_ANCHORS, x_pct)
+    return _piecewise_interp(X_ANCHORS, x_pct)
+
+def html_y_to_svg(y_pct):
+    """Convert HTML top% to SVG y using piecewise interpolation over ROW_TABLE."""
+    return _piecewise_interp(ROW_TABLE, y_pct)
+
+def snap_to_grid_y(y):
+    """Snap y to nearest grid line if within threshold."""
+    for gy in GRID_Y_VALUES:
+        if abs(y - gy) < SNAP_THRESHOLD_Y:
+            return gy
+    return y
+
+def html_w_to_svg(x_pct, w_pct, use_left=False):
+    """Convert HTML width% to SVG width using local scale at x_pct."""
+    return html_x_to_svg(x_pct + w_pct, use_left) - html_x_to_svg(x_pct, use_left)
+
+def html_h_to_svg(top_pct, h_pct):
+    """Convert HTML height% to SVG height using endpoint difference."""
+    return html_y_to_svg(top_pct + h_pct) - html_y_to_svg(top_pct)
+
+# ─── SVG processing: keep full layout, strip only text vector paths ──────────
+
+def process_svg(svg_text):
+    """Keep the full original SVG but remove text vector paths (lines 241-5984).
+
+    Returns the SVG content without the closing </svg> tag, ready for
+    plot shape injection.
+    """
+    lines = svg_text.split('\n')
+
+    # Remove text vector paths (lines 241-5984, 0-indexed 240-5983)
+    # These are <path d="..."> elements that render plot numbers as outlines.
+    # We replace them with our own <text> labels.
+    kept = lines[:240] + lines[5984:]
+
+    # Add id="layout-map" to the <svg> tag for JS targeting
+    for i, line in enumerate(kept):
+        if '<svg' in line and 'id=' not in line:
+            kept[i] = line.replace('<svg ', '<svg id="layout-map" ', 1)
+            break
+
+    # Remove the closing </svg> — we'll add it back after injecting plots
+    result = '\n'.join(kept)
+    result = result.rstrip()
+    if result.endswith('</svg>'):
+        result = result[:-6].rstrip()
+
+    removed = len(lines) - len(kept)
+    print(f"Removed {removed} lines of text vector paths (lines 241-5984)")
+    print(f"Kept {len(kept)} lines of original SVG structure")
+
+    return result
+
+
+def sanitize_id(label):
+    """Convert '82/A' → 'plot-82-A'"""
+    return 'plot-' + label.replace('/', '-')
+
+
+def generate_plot_elements(plots):
+    """Generate SVG <rect>/<polygon> and <text> elements for all plots."""
+    rects = []
+    texts = []
+
+    for p in plots:
+        lbl = p['lbl']
+        st = p['st']
+        sqyd = p.get('sqyd', '400')
+        pid = sanitize_id(lbl)
+        css_class = f"plot {st}"
+
+        left_pct = p['left']
+        top_pct = p['top']
+        w_pct = p['width']
+        h_pct = p['height']
+
+        # Determine which area this plot belongs to
+        base_lbl = lbl.split('/')[0]
+        is_left_area = base_lbl in LEFT_AREA_LABELS
+        is_diag = lbl in DIAG_PLOT_LABELS
+        is_top_area = base_lbl in TOP_AREA_LABELS
+
+        # Y coordinates (same for all plots — ROW_TABLE works everywhere)
+        svg_top_y = snap_to_grid_y(html_y_to_svg(top_pct))
+        svg_bot_y = snap_to_grid_y(html_y_to_svg(top_pct + h_pct))
+        svg_h = svg_bot_y - svg_top_y
+        if svg_h < 1:
+            svg_h = 1
+            svg_bot_y = svg_top_y + svg_h
+
+        if base_lbl in MANUAL_PLOT_COORDS:
+            # Manually aligned polygon coordinates for plots 1-26
+            coords = MANUAL_PLOT_COORDS[base_lbl]
+            points = ' '.join(f"{x:.1f},{y:.1f}" for x, y in coords)
+
+            elem = (f'<polygon id="{pid}" class="{css_class}" '
+                    f'points="{points}" '
+                    f'data-label="{lbl}" data-status="{st}" data-sqyd="{sqyd}"/>')
+            rects.append(elem)
+
+            cx = sum(x for x, y in coords) / len(coords)
+            cy = sum(y for x, y in coords) / len(coords)
+
+        elif is_left_area:
+            # Fallback for left-area plots not in MANUAL_PLOT_COORDS (e.g. plot 95)
+            svg_x = html_x_to_svg(left_pct, use_left=True)
+            svg_w = html_w_to_svg(left_pct, w_pct, use_left=True)
+
+            for _, boundary in LEFT_X_ANCHORS:
+                if abs(svg_x - boundary) < 2:
+                    svg_w += svg_x - boundary
+                    svg_x = boundary
+                    break
+
+            if svg_w < 1:
+                svg_w = 1
+
+            elem = (f'<rect id="{pid}" class="{css_class}" '
+                    f'x="{svg_x:.1f}" y="{svg_top_y:.1f}" '
+                    f'width="{svg_w:.1f}" height="{svg_h:.1f}" '
+                    f'data-label="{lbl}" data-status="{st}" data-sqyd="{sqyd}"/>')
+            rects.append(elem)
+
+            cx = svg_x + svg_w / 2
+            cy = svg_top_y + svg_h / 2
+
+        else:
+            # Main grid rect
+            svg_x = html_x_to_svg(left_pct)
+            svg_w = html_w_to_svg(left_pct, w_pct)
+
+            # Snap to main grid column boundaries
+            for _, boundary in X_ANCHORS:
+                if abs(svg_x - boundary) < 2:
+                    svg_w += svg_x - boundary
+                    svg_x = boundary
+                    break
+
+            if svg_w < 1:
+                svg_w = 1
+
+            elem = (f'<rect id="{pid}" class="{css_class}" '
+                    f'x="{svg_x:.1f}" y="{svg_top_y:.1f}" '
+                    f'width="{svg_w:.1f}" height="{svg_h:.1f}" '
+                    f'data-label="{lbl}" data-status="{st}" data-sqyd="{sqyd}"/>')
+            rects.append(elem)
+
+            cx = svg_x + svg_w / 2
+            cy = svg_top_y + svg_h / 2
+
+        # Font size: scale down for narrow plots or /A /B labels
+        font_size = 5.5
+        if len(lbl) > 3:
+            font_size = 4
+        elif len(lbl) > 2:
+            font_size = 4.5
+
+        display_lbl = lbl
+        text_elem = (f'<text x="{cx:.1f}" y="{cy + 1.8:.1f}" '
+                     f'text-anchor="middle" font-size="{font_size}" '
+                     f'fill="#1a1a1a" fill-opacity="0.9" '
+                     f'font-family="Rajdhani, sans-serif" font-weight="600">'
+                     f'{display_lbl}</text>')
+        texts.append(text_elem)
+
+    return rects, texts
+
+
+def build_svg():
+    # Read inputs
+    with open(SVG_INPUT, 'r', encoding='utf-8') as f:
+        svg_text = f.read()
+    with open(JSON_INPUT, 'r', encoding='utf-8') as f:
+        plots = json.load(f)
+
+    print(f"Read {len(plots)} plots from {JSON_INPUT}")
+
+    # Process SVG: keep full layout, strip only text vector paths
+    svg_base = process_svg(svg_text)
+
+    # Generate plot shapes
+    rects, texts = generate_plot_elements(plots)
+    print(f"Generated {len(rects)} plot shapes + {len(texts)} labels")
+
+    # Inject plot shapes and labels before closing </svg>
+    indent = '  '
+    inject_parts = []
+
+    # Plot shapes layer
+    inject_parts.append(f'{indent}<g id="plots">')
+    for elem in rects:
+        inject_parts.append(f'{indent}{indent}{elem}')
+    inject_parts.append(f'{indent}</g>')
+
+    # Plot labels layer (non-interactive, on top)
+    inject_parts.append(f'{indent}<g id="plot-labels" pointer-events="none">')
+    for elem in texts:
+        inject_parts.append(f'{indent}{indent}{elem}')
+    inject_parts.append(f'{indent}</g>')
+
+    inject_parts.append('</svg>')
+
+    svg_out = svg_base + '\n' + '\n'.join(inject_parts)
+
+    with open(SVG_OUTPUT, 'w', encoding='utf-8') as f:
+        f.write(svg_out)
+
+    line_count = svg_out.count('\n') + 1
+    print(f"\nWrote {SVG_OUTPUT}: {len(svg_out)} bytes, {line_count} lines")
+
+    # Verify counts
+    rect_count = svg_out.count('<rect id="plot-')
+    poly_count = svg_out.count('<polygon id="plot-')
+    total = rect_count + poly_count
+    print(f"Plot shapes: {rect_count} rects + {poly_count} polygons = {total} total")
+
+    # Status breakdown
+    for status in ['available', 'sold', 'booked', 'registered']:
+        count = svg_out.count(f'data-status="{status}"')
+        print(f"  {status}: {count}")
+
+
+if __name__ == '__main__':
+    build_svg()
