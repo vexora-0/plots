@@ -2865,9 +2865,9 @@
     "lbl": "291",
     "st": "available",
     "sqyd": "400",
-    "left": 59.076,
+    "left": 62.683,
     "top": 83.201,
-    "width": 3.608,
+    "width": 3.269,
     "height": 2.329
   },
   {
@@ -2919,27 +2919,27 @@
     "lbl": "299",
     "st": "available",
     "sqyd": "400",
-    "left": 62.683,
+    "left": 65.953,
     "top": 79.043,
-    "width": 3.269,
+    "width": 2.988,
     "height": 2.329
   },
   {
     "lbl": "300",
     "st": "available",
     "sqyd": "400",
-    "left": 62.683,
+    "left": 65.953,
     "top": 81.371,
-    "width": 3.269,
+    "width": 2.988,
     "height": 2.523
   },
   {
     "lbl": "301",
     "st": "available",
     "sqyd": "400",
-    "left": 62.683,
+    "left": 65.953,
     "top": 83.894,
-    "width": 3.269,
+    "width": 2.988,
     "height": 2.329
   },
   {
@@ -3058,5 +3058,23 @@
     "top": 55.239,
     "width": 1.6065,
     "height": 3.299
+  },
+  {
+    "lbl": "279",
+    "st": "available",
+    "sqyd": "400",
+    "left": 55.75,
+    "top": 55.24,
+    "width": 3.326,
+    "height": 2.0
+  },
+  {
+    "lbl": "281",
+    "st": "available",
+    "sqyd": "400",
+    "left": 55.75,
+    "top": 46.0,
+    "width": 3.326,
+    "height": 5.488
   }
 ]
